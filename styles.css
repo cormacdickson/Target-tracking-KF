@@ -1,0 +1,164 @@
+:root {
+  --bg: #12121f;
+  --panel: #1e1e32;
+  --canvas-bg: #1a1a2e;
+  --text: #d8d8e8;
+  --muted: #8a8aa8;
+  --true-col: #ffffff;
+  --obs-col: #ff9f43;
+  --est-col: #22d3ee;
+  --good: #4ade80;
+  --bad: #f87171;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.container {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 16px;
+}
+h1 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0 0 12px;
+}
+
+/* ---------------- tracking canvas ---------------- */
+#canvas {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  background: var(--canvas-bg);
+  border-radius: 8px;
+  cursor: crosshair;
+  touch-action: none; /* let pointermove drive the demo on touch instead of scrolling */
+}
+.canvas-wrap { position: relative; }
+
+/* ---------------- sliders & buttons ---------------- */
+.controls {
+  display: grid;
+  gap: 10px;
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-top: 12px;
+}
+.control {
+  display: grid;
+  grid-template-columns: 12em 1fr 6em;
+  align-items: center;
+  gap: 12px;
+}
+.control label { white-space: nowrap; color: var(--muted); }
+.control input[type="range"] { width: 100%; min-width: 0; }
+.control output {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 560px) {
+  .control { grid-template-columns: 1fr 6em; }
+  .control label { grid-column: 1 / -1; }
+}
+.buttons { display: flex; gap: 8px; margin-top: 4px; }
+button {
+  background: #32324e;
+  color: var(--text);
+  border: 1px solid #4a4a6a;
+  border-radius: 6px;
+  padding: 6px 16px;
+  font: inherit;
+  cursor: pointer;
+}
+button:hover { background: #3d3d5c; }
+
+/* ---------------- RMSE panel ---------------- */
+.metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 32px;
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-top: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.metrics div { min-width: 180px; }
+.metrics .label { color: var(--muted); font-size: 0.85em; }
+.metrics .value { font-size: 1.1em; }
+
+/* ---------------- attention layer ---------------- */
+.phase-overlay {
+  /* Sits over the canvas but lets pointer events through everywhere
+     except the button, so the tracking demo keeps working underneath. */
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.phase-card {
+  background: rgba(30, 30, 50, 0.92);
+  border: 1px solid #4a4a6a;
+  border-radius: 10px;
+  padding: 18px 24px;
+  max-width: 460px;
+  text-align: center;
+}
+.phase-card h2 { font-size: 1.05rem; margin: 0 0 8px; }
+.phase-card p { margin: 0 0 12px; color: var(--muted); }
+.phase-card button { pointer-events: auto; }
+.cal-banner {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  padding: 8px;
+  text-align: center;
+  background: rgba(30, 30, 50, 0.85);
+  border-radius: 8px 8px 0 0;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+.hidden { display: none; }
+.attention {
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-top: 12px;
+}
+.att-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 10px;
+}
+.att-stat { color: var(--muted); }
+.att-stat strong {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.att-spacer { flex: 1; }
+.pill {
+  padding: 2px 12px;
+  border-radius: 999px;
+  font-size: 0.85em;
+  background: #32324e;
+  color: var(--muted);
+}
+.pill.on { background: rgba(74, 222, 128, 0.15); color: var(--good); }
+.pill.off { background: rgba(251, 191, 36, 0.18); color: #fbbf24; }
+#attCanvas {
+  display: block;
+  width: 100%;
+  height: 180px;
+  background: var(--canvas-bg);
+  border-radius: 6px;
+}
