@@ -1,0 +1,1334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kalman Filter Target Tracking</title>
+<style>
+  :root {
+    --bg: #12121f;
+    --panel: #1e1e32;
+    --canvas-bg: #1a1a2e;
+    --text: #d8d8e8;
+    --muted: #8a8aa8;
+    --true-col: #ffffff;
+    --obs-col: #ff9f43;
+    --est-col: #22d3ee;
+    --good: #4ade80;
+    --bad: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .container {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 16px;
+  }
+  h1 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    margin: 0 0 12px;
+  }
+  #canvas {
+    display: block;
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    background: var(--canvas-bg);
+    border-radius: 8px;
+    cursor: crosshair;
+    touch-action: none; /* let pointermove drive the demo on touch instead of scrolling */
+  }
+  .canvas-wrap { position: relative; }
+  .controls {
+    display: grid;
+    gap: 10px;
+    background: var(--panel);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-top: 12px;
+  }
+  .control {
+    display: grid;
+    grid-template-columns: 12em 1fr 6em;
+    align-items: center;
+    gap: 12px;
+  }
+  .control label { white-space: nowrap; color: var(--muted); }
+  .control input[type="range"] { width: 100%; min-width: 0; }
+  .control output {
+    text-align: right;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  @media (max-width: 560px) {
+    .control { grid-template-columns: 1fr 6em; }
+    .control label { grid-column: 1 / -1; }
+  }
+  .buttons { display: flex; gap: 8px; margin-top: 4px; }
+  button {
+    background: #32324e;
+    color: var(--text);
+    border: 1px solid #4a4a6a;
+    border-radius: 6px;
+    padding: 6px 16px;
+    font: inherit;
+    cursor: pointer;
+  }
+  button:hover { background: #3d3d5c; }
+  .metrics {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 32px;
+    background: var(--panel);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-top: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  .metrics div { min-width: 180px; }
+  .metrics .label { color: var(--muted); font-size: 0.85em; }
+  .metrics .value { font-size: 1.1em; }
+  .explain { margin-top: 16px; color: var(--muted); }
+  .explain p { margin: 0 0 10px; }
+  .explain .swatch {
+    display: inline-block;
+    width: 0.7em; height: 0.7em;
+    border-radius: 50%;
+    margin: 0 2px;
+  }
+  /* --- attention layer --- */
+  .phase-overlay {
+    /* Sits over the canvas but lets pointer events through everywhere
+       except the button, so the tracking demo keeps working underneath. */
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+  .phase-card {
+    background: rgba(30, 30, 50, 0.92);
+    border: 1px solid #4a4a6a;
+    border-radius: 10px;
+    padding: 18px 24px;
+    max-width: 460px;
+    text-align: center;
+  }
+  .phase-card h2 { font-size: 1.05rem; margin: 0 0 8px; }
+  .phase-card p { margin: 0 0 12px; color: var(--muted); }
+  .phase-card button { pointer-events: auto; }
+  .cal-banner {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    padding: 8px;
+    text-align: center;
+    background: rgba(30, 30, 50, 0.85);
+    border-radius: 8px 8px 0 0;
+    pointer-events: none;
+    font-variant-numeric: tabular-nums;
+  }
+  .hidden { display: none; }
+  .attention {
+    background: var(--panel);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-top: 12px;
+  }
+  .att-header {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    margin-bottom: 10px;
+  }
+  .att-stat { color: var(--muted); }
+  .att-stat strong {
+    color: var(--text);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .att-spacer { flex: 1; }
+  .pill {
+    padding: 2px 12px;
+    border-radius: 999px;
+    font-size: 0.85em;
+    background: #32324e;
+    color: var(--muted);
+  }
+  .pill.on { background: rgba(74, 222, 128, 0.15); color: var(--good); }
+  .pill.off { background: rgba(251, 191, 36, 0.18); color: #fbbf24; }
+  #attCanvas {
+    display: block;
+    width: 100%;
+    height: 180px;
+    background: var(--canvas-bg);
+    border-radius: 6px;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Kalman Filter Target Tracking</h1>
+
+  <div class="canvas-wrap">
+    <canvas id="canvas"></canvas>
+    <div id="calBanner" class="cal-banner hidden">
+      Track the dot as accurately as you can &mdash; <span id="calCountdown">45</span>&nbsp;s
+    </div>
+    <div id="introOverlay" class="phase-overlay">
+      <div class="phase-card">
+        <h2>Attention tracking</h2>
+        <p>Follow the white dot with your cursor. A short calibration will
+        measure how well <em>you</em> track when trying your best; after that,
+        the panel below estimates in real time how attentively you are
+        tracking.</p>
+        <button id="startCalBtn">Start calibration</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="control">
+      <label for="noiseSlider">Injected noise &sigma;<sub>n</sub></label>
+      <input type="range" id="noiseSlider" min="0" max="60" step="1" value="25">
+      <output id="noiseValue">25 px</output>
+    </div>
+    <div class="control">
+      <!-- Log-scale slider: the slider's value is the base-10 exponent. -->
+      <label for="procSlider">Process noise &sigma;<sub>a</sub></label>
+      <input type="range" id="procSlider" min="1" max="3.4771" step="0.0001" value="2.4771">
+      <output id="procValue">300 px/s&sup2;</output>
+    </div>
+    <div class="control">
+      <!-- Log-scale slider: the slider's value is the base-10 exponent. -->
+      <label for="measSlider">Measurement noise &sigma;<sub>r</sub></label>
+      <input type="range" id="measSlider" min="0" max="2.4771" step="0.0001" value="1.3979">
+      <output id="measValue">25 px</output>
+    </div>
+    <div class="buttons">
+      <button id="pauseBtn">Pause</button>
+      <button id="resetBtn">Reset</button>
+    </div>
+  </div>
+
+  <div class="metrics">
+    <div>
+      <div class="label">Observation RMSE (300 frames)</div>
+      <div class="value"><span id="obsRmse">&ndash;</span> px</div>
+    </div>
+    <div>
+      <div class="label">Estimate RMSE (300 frames)</div>
+      <div class="value"><span id="estRmse">&ndash;</span> px</div>
+    </div>
+    <div>
+      <div class="label">Improvement</div>
+      <div class="value"><span id="improvement">&ndash;</span></div>
+    </div>
+  </div>
+
+  <div class="attention">
+    <div class="att-header">
+      <span id="attPill" class="pill">waiting</span>
+      <span class="att-stat">estimate <strong id="attEstimate">&ndash;</strong></span>
+      <span class="att-stat">mismatch <strong id="attMismatch">&ndash;</strong> px/s</span>
+      <span class="att-spacer"></span>
+      <button id="restartBtn">Restart phases</button>
+      <button id="csvBtn">Download CSV</button>
+    </div>
+    <canvas id="attCanvas"></canvas>
+  </div>
+
+  <div class="explain">
+    <p>
+      The attention score is measured against your own calibrated ceiling:
+      whatever tracking quality you produce during calibration becomes the
+      zero line, so limited skill is absorbed into the baseline and the score
+      reads deviation from it &mdash; attention, not ability.
+    </p>
+    <p>
+      The solid cyan line is a slow Kalman filter's estimate of that score;
+      the dashed grey line is a simple moving average of the same readings.
+      The filter adds what the average cannot: it weighs each new reading
+      against how confident it already is, shows that confidence as the
+      shaded band, widens the band honestly when readings stop arriving, and
+      carries a trend term so it can follow a genuine decline without
+      chasing every blip.
+    </p>
+    <p>
+      Try it: look away for a few seconds, then track badly on purpose while
+      still following the dot &mdash; and see which one the estimate
+      punishes. To be fair, with velocity mismatch as the only signal the
+      two are only partially distinguishable.
+    </p>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* ================================================================
+ * CONSTANTS & TUNABLE PARAMETERS
+ * ================================================================
+ * All positions and noise values are in CSS pixels. `params` holds
+ * the live slider values; everything reads them fresh each frame so
+ * slider changes take effect immediately.
+ *
+ * Note on defaults: the filter performs best when the measurement
+ * noise it assumes (sigma_r) matches the noise actually injected
+ * into the samples (sigma_n). The defaults match on purpose
+ * (25 px each), and the sliders let the user break that match on
+ * purpose to explore the failure modes.
+ */
+const params = {
+  sigmaN: 25,   // injected Gaussian noise std, px (what we corrupt samples with)
+  sigmaA: 300,  // process noise std, px/s^2 (white-noise acceleration)
+  sigmaR: 25,   // measurement noise std the FILTER assumes, px
+};
+
+const TRAIL_LEN = 90;        // points kept per trail
+const RMSE_WINDOW = 300;     // frames in the rolling RMSE window
+const DT_MIN = 0.001;        // s — guard against zero/negative deltas
+const DT_MAX = 0.05;         // s — larger raw gaps (tab switch) clamp here and clear trails
+const P_INIT = 500 * 500;    // initial variance for both state entries
+const P_CAP = 1e6;           // cap on P's diagonal while coasting so it can't blow up
+
+/* ================================================================
+ * UTILITIES
+ * ================================================================ */
+
+// Box-Muller transform: one standard Gaussian sample from two uniforms.
+function gaussian() {
+  let u = 0;
+  while (u === 0) u = Math.random(); // avoid log(0)
+  const v = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+
+/* ================================================================
+ * DOT MOTION
+ * ================================================================
+ * Lissajous-style sum of sines per axis, computed in normalized
+ * [0,1]x[0,1] coordinates so window resizes never change the shape
+ * of the trajectory. Amplitude check:
+ *   x: 0.5 ± (0.32 + 0.11) → [0.07, 0.93]   (≥ 5% from each edge)
+ *   y: 0.5 ± (0.30 + 0.12) → [0.08, 0.92]   (≥ 5% from each edge)
+ */
+function dotPosition(t) {
+  return {
+    nx: 0.5 + 0.32 * Math.sin(0.31 * t) + 0.11 * Math.sin(0.83 * t + 1.2),
+    ny: 0.5 + 0.30 * Math.sin(0.23 * t + 0.7) + 0.12 * Math.sin(0.67 * t),
+  };
+}
+
+// Analytic time-derivative of dotPosition, in normalized units/s (callers
+// scale by W and H to get CSS px/s). The target's velocity is known in
+// closed form, so there is no reason to finite-difference it.
+function dotVelocity(t) {
+  return {
+    dnx: 0.32 * 0.31 * Math.cos(0.31 * t) + 0.11 * 0.83 * Math.cos(0.83 * t + 1.2),
+    dny: 0.30 * 0.23 * Math.cos(0.23 * t + 0.7) + 0.12 * 0.67 * Math.cos(0.67 * t),
+  };
+}
+
+/* ================================================================
+ * KALMAN FILTER
+ * ================================================================
+ * Two INDEPENDENT 1-D constant-velocity filters, one per axis.
+ * This decoupling is intentional: x and y noise are independent, so
+ * a coupled 4-D filter buys nothing, while decoupling keeps every
+ * matrix at most 2x2 and makes the observation update fully scalar —
+ * no matrix inversion is needed anywhere below.
+ *
+ * State per axis:  x = [position, velocity]'
+ * Observation:     z = noisy cursor coordinate (scalar)
+ *
+ * Model matrices for timestep dt:
+ *   F = [[1, dt],  transition: position += velocity*dt
+ *        [0,  1]]
+ *   Q = sigma_a^2 * [[dt^4/4, dt^3/2],   white-noise-acceleration
+ *                    [dt^3/2, dt^2  ]]   process noise
+ *   H = [1, 0]                            we observe position only
+ *   R = sigma_r^2                         scalar measurement variance
+ */
+class KF1D {
+  constructor() {
+    this.initialized = false;
+    // State [position, velocity] and covariance P (2x2, stored as entries).
+    this.pos = 0;
+    this.vel = 0;
+    this.p00 = 0; this.p01 = 0;
+    this.p10 = 0; this.p11 = 0;
+  }
+
+  // First sample (or recovery after a numerical fault): position from the
+  // sample, zero velocity, and a huge covariance so the first few updates
+  // pull the state hard toward the data. Callers on other scales (the
+  // attention filter works in z-scores) pass their own initial variances.
+  init(z, p0 = P_INIT, p1 = P_INIT) {
+    this.pos = z;
+    this.vel = 0;
+    this.p00 = p0; this.p01 = 0;
+    this.p10 = 0;  this.p11 = p1;
+    this.initialized = true;
+  }
+
+  // Predict step: x = F x ; P = F P F' + Q. Runs every animation frame,
+  // whether or not a measurement arrived — that is what makes the estimate
+  // coast smoothly along its velocity when the cursor stops or leaves.
+  predict(dt, sigmaA) {
+    // x = F x
+    this.pos += this.vel * dt;
+
+    // P = F P F' + Q, expanded for F = [[1,dt],[0,1]]:
+    const dt2 = dt * dt, dt3 = dt2 * dt, dt4 = dt3 * dt;
+    const qs = sigmaA * sigmaA;
+    const p00 = this.p00 + dt * (this.p10 + this.p01) + dt2 * this.p11 + qs * dt4 / 4;
+    const p01 = this.p01 + dt * this.p11 + qs * dt3 / 2;
+    const p10 = this.p10 + dt * this.p11 + qs * dt3 / 2;
+    const p11 = this.p11 + qs * dt2;
+    this.p00 = p00; this.p01 = p01; this.p10 = p10; this.p11 = p11;
+
+    // Cap the diagonal so covariance cannot blow up during long
+    // predict-only coasting (pointer off the canvas). On re-entry the
+    // still-large P makes the filter snap to the new data.
+    this.p00 = Math.min(this.p00, P_CAP);
+    this.p11 = Math.min(this.p11, P_CAP);
+  }
+
+  // Update step with a scalar observation z. Returns the innovation
+  // (measurement minus prediction); callers may ignore it.
+  update(z, sigmaR) {
+    const R = sigmaR * sigmaR;
+
+    // Innovation and its (scalar) variance: y = z - Hx ; S = H P H' + R.
+    const y = z - this.pos;
+    const S = this.p00 + R;
+
+    // Kalman gain K = P H' / S — a 2-vector, no inversion needed.
+    const k0 = this.p00 / S;
+    const k1 = this.p10 / S;
+
+    // State correction: x = x + K y.
+    this.pos += k0 * y;
+    this.vel += k1 * y;
+
+    // Covariance update: P = (I - K H) P, expanded for H = [1, 0].
+    const p00 = (1 - k0) * this.p00;
+    const p01 = (1 - k0) * this.p01;
+    const p10 = this.p10 - k1 * this.p00;
+    const p11 = this.p11 - k1 * this.p01;
+
+    // Symmetrize: P = (P + P') / 2, killing the asymmetry that floating-
+    // point rounding introduces so P stays a valid covariance.
+    this.p00 = p00;
+    this.p11 = p11;
+    this.p01 = this.p10 = (p01 + p10) / 2;
+
+    return y;
+  }
+
+  // Numerical health check. If anything went non-finite, flag the filter
+  // for reinitialization from the next pointer sample.
+  isHealthy() {
+    return Number.isFinite(this.pos) && Number.isFinite(this.vel) &&
+           Number.isFinite(this.p00) && Number.isFinite(this.p01) &&
+           Number.isFinite(this.p10) && Number.isFinite(this.p11);
+  }
+}
+
+/* ================================================================
+ * ATTENTION LAYER — CONSTANTS & PURE HELPERS
+ * ================================================================
+ * The attention layer estimates how attentively the user is tracking,
+ * from the mismatch between the CLEAN cursor velocity and the target's
+ * true velocity. It never sees the injected noise — it estimates the
+ * human, not the synthetic corruption. (The tracking filters above keep
+ * receiving only the noisy samples.)
+ */
+const ATT_SIGMA_A = 0.35; // process noise of the attention filter. Small by
+                          // design: attention drifts over tens of seconds,
+                          // so the filter should resist per-reading chatter.
+const ATT_SIGMA_R = 1.0;  // observations are z-scored, so unit measurement
+                          // variance is the principled choice.
+const ATT_WINDOW = 0.5;   // s of pointer-over time per observation (~2 Hz)
+const ATT_MIN_FRAMES = 10;// windows with fewer mismatch samples are skipped
+const ATT_LAG = 0.150;    // s: compare against where the target was 150 ms
+                          // ago, so normal human reaction delay does not
+                          // read as inattention.
+const ATT_V_ALPHA = 0.3;  // EMA coefficient for the cursor-velocity estimate
+const ATT_STILL_S = 0.1;  // s of pointer silence before we call it "at rest"
+const CAL_TOTAL = 45;     // s of calibration
+const CAL_DISCARD = 10;   // s discarded at the start (settling in)
+const ATT_GAP_S = 2.0;    // s without observations that counts as a gap
+const OFF_ENTER = -2.0;   // hysteresis: OFF-TASK below this for OFF_DWELL s…
+const OFF_EXIT = -1.0;    // …and back ON above this
+const OFF_DWELL = 2.0;    // s the mean must stay below OFF_ENTER to trigger
+const EMA_HALFLIFE = 5;   // s half-life of the naive EMA baseline
+const CHART_SPAN = 60;    // s of history shown in the strip chart
+const CHART_Y_MAX = 3, CHART_Y_MIN = -6; // fixed chart y-range
+const LOG_CAP = 50000;    // max in-memory log rows
+
+function median(arr) {
+  const s = [...arr].sort((a, b) => a - b);
+  const mid = s.length >> 1;
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+// Median absolute deviation — a robust spread estimate. The 1.4826 factor
+// (applied by the caller) makes it comparable to a standard deviation for
+// Gaussian data.
+function mad(arr) {
+  const m = median(arr);
+  return median(arr.map((v) => Math.abs(v - m)));
+}
+
+/* ================================================================
+ * end of pure logic — everything below touches the DOM
+ * ================================================================ */
+
+/* ================================================================
+ * CANVAS & DPR HANDLING
+ * ================================================================
+ * The canvas backing store is scaled by devicePixelRatio; a matching
+ * ctx transform means all drawing logic works in CSS pixels.
+ */
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+let W = 0, H = 0; // canvas size in CSS pixels
+
+function resizeCanvas() {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  W = rect.width;
+  H = rect.height;
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  clearTrails(); // trails are in CSS-px coordinates of the old size
+}
+window.addEventListener("resize", resizeCanvas);
+
+/* ================================================================
+ * FILTER + DEMO STATE
+ * ================================================================ */
+const kfX = new KF1D();
+const kfY = new KF1D();
+
+let dotT = 0;             // dot-motion time, s — advances only while unpaused
+let paused = false;
+let pointerOver = false;  // false → predict-only coasting, metrics frozen
+let pendingObs = null;    // most recent noisy sample since last frame, {x, y}
+let lastNow = performance.now();
+
+// Trails: explicit point arrays, oldest first (no translucent-rect fade —
+// it ghosts).
+const trueTrail = [];
+const obsTrail = [];
+const estTrail = [];
+
+function clearTrails() {
+  trueTrail.length = 0;
+  obsTrail.length = 0;
+  estTrail.length = 0;
+}
+
+function pushTrail(trail, x, y) {
+  trail.push({ x, y });
+  if (trail.length > TRAIL_LEN) trail.shift();
+}
+
+/* ================================================================
+ * INPUT
+ * ================================================================
+ * Gaussian noise (std sigma_n) is added ONCE, at sample time. The noisy
+ * value is both what the filter sees and what is drawn as the observation
+ * marker — the filter never sees the clean cursor. Only the most recent
+ * sample per frame is kept; intermediates are discarded.
+ */
+canvas.addEventListener("pointermove", (e) => {
+  pointerOver = true;
+  const rect = canvas.getBoundingClientRect();
+  const cx = e.clientX - rect.left;
+  const cy = e.clientY - rect.top;
+  // Clean sample for the attention layer, stored BEFORE noise is added —
+  // the attention layer estimates the human, so it must never see the
+  // injected noise. The tracking filter sees only the noisy sample below.
+  pendingClean = { x: cx, y: cy, t: performance.now() / 1000 };
+  pendingObs = {
+    x: cx + gaussian() * params.sigmaN,
+    y: cy + gaussian() * params.sigmaN,
+  };
+});
+canvas.addEventListener("pointerleave", () => {
+  pointerOver = false;
+  pendingObs = null;
+  // Attention layer: a window the pointer left is not a valid observation,
+  // and velocity differencing must re-seed on re-entry.
+  pendingClean = null;
+  lastClean = null;
+  winBroken = true;
+});
+
+/* ================================================================
+ * METRICS
+ * ================================================================
+ * Rolling windows of squared radial error (obs vs true, est vs true)
+ * over the last RMSE_WINDOW frames. Metrics accumulate only while the
+ * pointer is over the canvas and the demo is unpaused.
+ */
+const obsSqErr = [];
+const estSqErr = [];
+
+function pushWindow(arr, value, cap) {
+  arr.push(value);
+  if (arr.length > cap) arr.shift();
+}
+
+function rmse(arr) {
+  if (arr.length === 0) return NaN;
+  let sum = 0;
+  for (const v of arr) sum += v;
+  return Math.sqrt(sum / arr.length);
+}
+
+function resetMetrics() {
+  obsSqErr.length = 0;
+  estSqErr.length = 0;
+}
+
+const obsRmseEl = document.getElementById("obsRmse");
+const estRmseEl = document.getElementById("estRmse");
+const improvementEl = document.getElementById("improvement");
+
+function renderMetrics() {
+  const o = rmse(obsSqErr);
+  const s = rmse(estSqErr);
+  obsRmseEl.textContent = Number.isFinite(o) ? o.toFixed(1) : "–";
+  estRmseEl.textContent = Number.isFinite(s) ? s.toFixed(1) : "–";
+  if (Number.isFinite(o) && Number.isFinite(s) && o > 0) {
+    const imp = (1 - s / o) * 100;
+    improvementEl.textContent = imp.toFixed(0) + "%";
+    improvementEl.style.color = imp > 0 ? "var(--good)" : "var(--bad)";
+  } else {
+    improvementEl.textContent = "–";
+    improvementEl.style.color = "";
+  }
+}
+
+/* ================================================================
+ * RENDERING
+ * ================================================================ */
+const COL_TRUE = "#ffffff";
+const COL_OBS = "#ff9f43";
+const COL_EST = "#22d3ee";
+
+// Trail as a polyline of individually stroked segments so alpha can fade
+// from `maxAlpha` at the newest point down to 0 at the oldest.
+function drawTrail(trail, color, maxAlpha, lineWidth) {
+  const n = trail.length;
+  if (n < 2) return;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth;
+  for (let i = 1; i < n; i++) {
+    ctx.globalAlpha = maxAlpha * (i / (n - 1));
+    ctx.beginPath();
+    ctx.moveTo(trail[i - 1].x, trail[i - 1].y);
+    ctx.lineTo(trail[i].x, trail[i].y);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+// Observation trail drawn as scattered points, not a polyline — it should
+// read as noise scatter, not a path.
+function drawScatter(trail, color, maxAlpha, radius) {
+  const n = trail.length;
+  ctx.fillStyle = color;
+  for (let i = 0; i < n; i++) {
+    ctx.globalAlpha = maxAlpha * ((i + 1) / n);
+    ctx.beginPath();
+    ctx.arc(trail[i].x, trail[i].y, radius, 0, 2 * Math.PI);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawCircle(x, y, r, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, 2 * Math.PI);
+  ctx.fill();
+}
+
+function drawXMark(x, y, r, color) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x - r, y - r); ctx.lineTo(x + r, y + r);
+  ctx.moveTo(x - r, y + r); ctx.lineTo(x + r, y - r);
+  ctx.stroke();
+}
+
+function drawLegend() {
+  const entries = [
+    { color: COL_TRUE, label: "true target" },
+    { color: COL_OBS, label: "noisy observation" },
+    { color: COL_EST, label: "Kalman estimate" },
+  ];
+  ctx.font = "13px system-ui, sans-serif";
+  ctx.textBaseline = "middle";
+  let y = 20;
+  for (const e of entries) {
+    drawCircle(16, y, 5, e.color);
+    ctx.fillStyle = "rgba(216, 216, 232, 0.8)";
+    ctx.fillText(e.label, 28, y);
+    y += 20;
+  }
+}
+
+function drawOverlay(text) {
+  ctx.fillStyle = "rgba(26, 26, 46, 0.6)";
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = "rgba(216, 216, 232, 0.9)";
+  ctx.font = "18px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, W / 2, H / 2);
+  ctx.textAlign = "start";
+}
+
+function draw(trueX, trueY) {
+  ctx.clearRect(0, 0, W, H);
+
+  drawTrail(trueTrail, COL_TRUE, 0.6, 2);
+  drawScatter(obsTrail, COL_OBS, 0.35, 2);
+  drawTrail(estTrail, COL_EST, 0.6, 2);
+
+  // Thin cyan line from the estimate to the true dot: the current error.
+  if (kfX.initialized && kfY.initialized) {
+    ctx.strokeStyle = COL_EST;
+    ctx.globalAlpha = 0.5;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(kfX.pos, kfY.pos);
+    ctx.lineTo(trueX, trueY);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  drawCircle(trueX, trueY, 10, COL_TRUE);
+  if (pendingObsDrawn) drawXMark(pendingObsDrawn.x, pendingObsDrawn.y, 4, COL_OBS);
+  if (kfX.initialized && kfY.initialized) drawCircle(kfX.pos, kfY.pos, 7, COL_EST);
+
+  drawLegend();
+
+  if (!(kfX.initialized && kfY.initialized)) {
+    drawOverlay("move your cursor to start");
+  }
+}
+
+/* ================================================================
+ * MAIN LOOP
+ * ================================================================ */
+let pendingObsDrawn = null; // last observation, kept around for drawing
+
+function frame(now) {
+  requestAnimationFrame(frame);
+
+  // dt from performance.now() deltas. A raw gap beyond DT_MAX (tab switch,
+  // long stall) clamps to DT_MAX and clears the trails, which would
+  // otherwise show a long straight teleport segment.
+  const rawDt = (now - lastNow) / 1000;
+  lastNow = now;
+  let dt = rawDt;
+  if (dt > DT_MAX) {
+    dt = DT_MAX;
+    clearTrails();
+  }
+  dt = Math.max(DT_MIN, dt);
+
+  if (!paused) {
+    // --- advance the dot ---
+    dotT += dt;
+    const { nx, ny } = dotPosition(dotT);
+    const trueX = nx * W;
+    const trueY = ny * H;
+    pushTrail(trueTrail, trueX, trueY);
+
+    // --- filter: predict every frame ---
+    if (kfX.initialized && kfY.initialized) {
+      kfX.predict(dt, params.sigmaA);
+      kfY.predict(dt, params.sigmaA);
+    }
+
+    // --- filter: update only if a fresh sample arrived this frame ---
+    if (pendingObs !== null) {
+      if (kfX.initialized && kfY.initialized) {
+        kfX.update(pendingObs.x, params.sigmaR);
+        kfY.update(pendingObs.y, params.sigmaR);
+      } else {
+        // First sample (or recovery): initialize instead of updating.
+        kfX.init(pendingObs.x);
+        kfY.init(pendingObs.y);
+      }
+      pendingObsDrawn = pendingObs;
+      pushTrail(obsTrail, pendingObs.x, pendingObs.y);
+      pendingObs = null;
+    }
+
+    // --- numerical guard: reinitialize from the next sample if broken ---
+    if (kfX.initialized && kfY.initialized && !(kfX.isHealthy() && kfY.isHealthy())) {
+      kfX.initialized = false;
+      kfY.initialized = false;
+      pendingObsDrawn = null;
+      clearTrails();
+      resetMetrics();
+    }
+
+    if (kfX.initialized && kfY.initialized) {
+      pushTrail(estTrail, kfX.pos, kfY.pos);
+
+      // --- metrics: only while the pointer is over the canvas ---
+      if (pointerOver && pendingObsDrawn) {
+        const dox = pendingObsDrawn.x - trueX, doy = pendingObsDrawn.y - trueY;
+        const dex = kfX.pos - trueX, dey = kfY.pos - trueY;
+        pushWindow(obsSqErr, dox * dox + doy * doy, RMSE_WINDOW);
+        pushWindow(estSqErr, dex * dex + dey * dey, RMSE_WINDOW);
+      }
+    }
+
+    // --- attention layer: per-frame pipeline (clean samples only) ---
+    attentionFrame(dt);
+
+    draw(trueX, trueY);
+    renderMetrics();
+  } else {
+    // Paused: dot, filter, and metrics are frozen, but rAF keeps rendering.
+    // lastNow still advances every frame above, so resuming has no dt spike.
+    const { nx, ny } = dotPosition(dotT);
+    draw(nx * W, ny * H);
+  }
+
+  // The attention panel renders every frame; while paused its clock is
+  // frozen, so the chart simply holds still.
+  drawAttChart();
+  renderAttHeader();
+}
+
+/* ================================================================
+ * ATTENTION LAYER — STATE
+ * ================================================================
+ * Phases: INTRO (explanatory overlay) → CAL (45 s calibration) → MAIN
+ * (live estimation). All attention timing — observation windows, gap
+ * detection, hysteresis dwell, the chart x-axis, and log timestamps —
+ * runs on attClock, which advances only while unpaused. Pausing
+ * therefore freezes the whole layer cleanly: no phantom gaps, no
+ * estimate jumps on resume.
+ */
+let phase = "INTRO";
+let attClock = 0;         // s of unpaused time since load / phase restart
+let calTime = 0;          // s of calibration completed (pointer-over only)
+let calObs = [];          // calibration observations (after the discard period)
+let mu0 = 0, sig0 = 1;    // per-user baseline, set when calibration ends
+
+let pendingClean = null;  // most recent CLEAN cursor sample {x, y, t}
+let lastClean = null;     // previously consumed clean sample
+let vUser = null;         // EMA-smoothed cursor velocity {x, y}, px/s
+let curMismatch = NaN;    // latest mismatch, for the header readout
+
+let winMismatch = [];     // mismatch samples in the current window
+let winTime = 0;          // accumulated pointer-over time in the window
+let winBroken = false;    // pointer left the canvas during the window
+
+const attKF = new KF1D(); // the same 1-D filter class, now on z-scores
+let lastObsClock = null;  // attClock of the last accepted observation
+let lastStepClock = 0;    // attClock when attKF was last stepped
+let gapAccum = 0;         // accumulator for predict-only chunks during gaps
+let emaZ = null;          // naive EMA baseline of the same z values
+let tickObs = null, tickZ = null; // last emitted obs/z, consumed by the log
+
+let offTask = false;      // hysteresis state
+let belowSince = null;    // attClock when the mean first dipped below OFF_ENTER
+
+let kalBuf = [];          // chart samples {t, m, s}
+let emaBuf = [];          // chart samples {t, v}
+let calPoints = [];       // raw calibration observations {t, v}
+let offSpans = [];        // OFF-TASK periods {start, end|null}
+let gapSpans = [];        // observation gaps {start, end|null}
+
+let logRows = [];         // CSV rows (strings)
+let logAccum = 0;         // 0.5 s ticker for logging
+
+/* ================================================================
+ * ATTENTION LAYER — PER-FRAME PIPELINE
+ * ================================================================ */
+function attentionFrame(dt) {
+  attClock += dt;
+  if (phase === "INTRO") return;
+
+  // --- calibration countdown (advances only while actually tracking) ---
+  if (phase === "CAL" && pointerOver) {
+    calTime += dt;
+    if (calTime >= CAL_TOTAL) finishCalibration();
+  }
+
+  // --- cursor velocity from clean samples ---
+  // Raw differencing of ~60 Hz pointer data is unusable on its own:
+  // coordinates are pixel-quantized, so ±1 px over a ~16 ms step is
+  // ±60 px/s of pure jitter. The EMA trades a little lag for a usable
+  // velocity signal.
+  const nowSec = performance.now() / 1000;
+  let haveVelocity = false;
+  if (pendingClean !== null) {
+    if (lastClean !== null) {
+      const cdt = pendingClean.t - lastClean.t;
+      if (cdt >= 0.001) {
+        const vx = (pendingClean.x - lastClean.x) / cdt;
+        const vy = (pendingClean.y - lastClean.y) / cdt;
+        vUser = vUser === null
+          ? { x: vx, y: vy }
+          : { x: vUser.x + ATT_V_ALPHA * (vx - vUser.x),
+              y: vUser.y + ATT_V_ALPHA * (vy - vUser.y) };
+        haveVelocity = true;
+      }
+    }
+    lastClean = pendingClean;
+    pendingClean = null;
+  } else if (pointerOver && lastClean !== null && vUser !== null &&
+             nowSec - lastClean.t > ATT_STILL_S) {
+    // Stationary synthesis: pointer events fire only on MOTION, so a
+    // silent pointer that is still over the canvas is verifiably at rest.
+    // Feed the EMA zero-velocity samples; without this, a cursor stopped
+    // dead would produce no observations at all and read as a data gap
+    // instead of as inattention.
+    vUser = { x: vUser.x * (1 - ATT_V_ALPHA), y: vUser.y * (1 - ATT_V_ALPHA) };
+    haveVelocity = true;
+  }
+
+  // --- mismatch sample ---
+  if (pointerOver && haveVelocity) {
+    // Compare against where the target was ATT_LAG (150 ms) ago: normal
+    // human reaction delay must not read as inattention.
+    const tv = dotVelocity(dotT - ATT_LAG);
+    curMismatch = Math.hypot(vUser.x - tv.dnx * W, vUser.y - tv.dny * H);
+    winMismatch.push(curMismatch);
+  }
+
+  // --- 0.5 s observation windows (pointer-over time only) ---
+  if (pointerOver) winTime += dt;
+  if (winTime >= ATT_WINDOW) {
+    winTime = 0;
+    if (!winBroken && winMismatch.length >= ATT_MIN_FRAMES) {
+      // Median over the window is robust to single-frame glitches. The
+      // +10 px/s floor keeps log() away from −inf and compresses the
+      // difference between "very good" and "perfect".
+      emitObservation(-Math.log(median(winMismatch) + 10));
+    }
+    winMismatch = [];
+    winBroken = false;
+  }
+
+  // --- gaps: predict-only in 0.5 s chunks (MAIN) ---
+  if (phase === "MAIN" && attKF.initialized && lastObsClock !== null) {
+    if (attClock - lastObsClock >= ATT_GAP_S) {
+      const open = gapSpans[gapSpans.length - 1];
+      if (!open || open.end !== null) gapSpans.push({ start: attClock, end: null });
+      gapAccum += dt;
+      while (gapAccum >= ATT_WINDOW) {
+        // The tracking filters' P_CAP applies here too, so the variance
+        // grows honestly during the gap but cannot blow up.
+        attKF.predict(ATT_WINDOW, ATT_SIGMA_A);
+        gapAccum -= ATT_WINDOW;
+      }
+      lastStepClock = attClock;
+    } else {
+      gapAccum = 0;
+    }
+  }
+
+  // --- displayed estimate, hysteresis label, chart buffers (MAIN) ---
+  if (phase === "MAIN" && attKF.initialized) {
+    const disp = attDisplayed();
+
+    // Hysteresis: OFF-TASK only after the mean stays below OFF_ENTER for
+    // OFF_DWELL seconds; back ON as soon as it climbs above OFF_EXIT.
+    if (!offTask) {
+      if (disp.mean < OFF_ENTER) {
+        if (belowSince === null) belowSince = attClock;
+        if (attClock - belowSince >= OFF_DWELL) {
+          offTask = true;
+          offSpans.push({ start: attClock, end: null });
+        }
+      } else {
+        belowSince = null;
+      }
+    } else if (disp.mean > OFF_EXIT) {
+      offTask = false;
+      offSpans[offSpans.length - 1].end = attClock;
+      belowSince = null;
+    }
+
+    // Decimate chart sampling to ≤ 60 points/s — some displays run rAF at
+    // 120+ Hz, which would double the buffer size for the same 60 s window.
+    const lastK = kalBuf[kalBuf.length - 1];
+    if (!lastK || attClock - lastK.t >= 1 / 65) {
+      kalBuf.push({ t: attClock, m: disp.mean, s: disp.sd });
+      emaBuf.push({ t: attClock, v: emaZ });
+    }
+  }
+  pruneChartBuffers();
+
+  // --- logging: one row per 0.5 s of unpaused time, gaps included ---
+  logAccum += dt;
+  while (logAccum >= ATT_WINDOW) {
+    logAccum -= ATT_WINDOW;
+    logRow();
+  }
+}
+
+// Model-interpolated display value between ~2 Hz observations: advance the
+// mean along the filter's velocity without mutating the state.
+function attDisplayed() {
+  return {
+    mean: attKF.pos + attKF.vel * Math.max(0, attClock - lastStepClock),
+    sd: Math.sqrt(Math.max(attKF.p00, 0)),
+  };
+}
+
+// Route an emitted observation to calibration or to the attention filter.
+function emitObservation(obs) {
+  tickObs = obs;
+  if (phase === "CAL") {
+    calPoints.push({ t: attClock, v: obs });
+    // The first CAL_DISCARD seconds are settling-in time, not baseline.
+    if (calTime > CAL_DISCARD) calObs.push(obs);
+    return;
+  }
+  if (phase !== "MAIN") return;
+
+  const z = (obs - mu0) / sig0;
+  tickZ = z;
+
+  const dtObs = lastObsClock === null
+    ? ATT_WINDOW
+    : Math.min(2.0, Math.max(0.25, attClock - lastObsClock));
+
+  if (!attKF.initialized) {
+    // First observation (or recovery after a numerical fault): moderate
+    // initial uncertainty on the z-score scale.
+    attKF.init(z, 4, 1);
+  } else {
+    attKF.predict(dtObs, ATT_SIGMA_A);
+    attKF.update(z, ATT_SIGMA_R);
+    if (!attKF.isHealthy()) attKF.initialized = false; // re-init next obs
+  }
+  lastObsClock = attClock;
+  lastStepClock = attClock;
+  gapAccum = 0;
+  const open = gapSpans[gapSpans.length - 1];
+  if (open && open.end === null) open.end = attClock;
+
+  // Naive EMA baseline on the same z values, half-life EMA_HALFLIFE. No
+  // uncertainty and no gap handling — it just holds its last value when
+  // observations stop. That contrast with the filter is the point.
+  const a = 1 - Math.pow(2, -dtObs / EMA_HALFLIFE);
+  emaZ = emaZ === null ? z : emaZ + a * (z - emaZ);
+}
+
+// The core idea of calibration: the user's own calibrated ceiling is the
+// yardstick. Low skill inflates mismatch during calibration and is absorbed
+// into mu0, so the score reads deviation from one's own baseline —
+// attention, not ability.
+function finishCalibration() {
+  if (calObs.length >= 5) {
+    mu0 = median(calObs);
+    sig0 = Math.max(1.4826 * mad(calObs), 0.05);
+  } else {
+    // Degenerate calibration (user barely tracked): loose fallback prior.
+    mu0 = calObs.length ? median(calObs) : -4;
+    sig0 = 1;
+  }
+  phase = "MAIN";
+  calBanner.classList.add("hidden");
+  // Calibration points are raw (un-z-scored) observations on a different
+  // scale from the z-scored lines that follow; leaving them on the axis
+  // would invite reading them as lapses.
+  calPoints = [];
+}
+
+function pruneChartBuffers() {
+  const cutoff = attClock - CHART_SPAN;
+  while (kalBuf.length && kalBuf[0].t < cutoff) kalBuf.shift();
+  while (emaBuf.length && emaBuf[0].t < cutoff) emaBuf.shift();
+  while (calPoints.length && calPoints[0].t < cutoff) calPoints.shift();
+  while (offSpans.length && offSpans[0].end !== null && offSpans[0].end < cutoff) offSpans.shift();
+  while (gapSpans.length && gapSpans[0].end !== null && gapSpans[0].end < cutoff) gapSpans.shift();
+}
+
+/* ================================================================
+ * ATTENTION LAYER — LOGGING
+ * ================================================================ */
+function logRow() {
+  const disp = phase === "MAIN" && attKF.initialized ? attDisplayed() : null;
+  logRows.push([
+    attClock.toFixed(2),
+    phase,
+    Number.isFinite(curMismatch) ? curMismatch.toFixed(1) : "",
+    tickObs !== null ? tickObs.toFixed(4) : "",
+    tickZ !== null ? tickZ.toFixed(3) : "",
+    disp ? disp.mean.toFixed(3) : "",
+    disp ? disp.sd.toFixed(3) : "",
+    emaZ !== null ? emaZ.toFixed(3) : "",
+    phase === "MAIN" ? (offTask ? "off_task" : "on_task") : "",
+    pointerOver ? 1 : 0,
+  ].join(","));
+  tickObs = null;
+  tickZ = null;
+  // Cap memory: drop the oldest rows in chunks rather than one at a time.
+  if (logRows.length > LOG_CAP) logRows.splice(0, 5000);
+}
+
+/* ================================================================
+ * ATTENTION LAYER — CHART RENDERING
+ * ================================================================ */
+const attCanvas = document.getElementById("attCanvas");
+const attCtx = attCanvas.getContext("2d");
+let AW = 0, AH = 0; // chart canvas size in CSS pixels
+
+function resizeAttCanvas() {
+  const rect = attCanvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  AW = rect.width;
+  AH = rect.height;
+  attCanvas.width = Math.round(AW * dpr);
+  attCanvas.height = Math.round(AH * dpr);
+  attCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener("resize", resizeAttCanvas);
+
+// Chart coordinate mapping: 60 s scrolling window ending "now" (attClock),
+// fixed y-range so the baseline and threshold stay put.
+const chartX = (t) => ((t - (attClock - CHART_SPAN)) / CHART_SPAN) * AW;
+// Values outside the fixed y-range are pinned to the edge, so a deep lapse
+// reads as "pegged at the bottom" rather than vanishing off the plot.
+const chartY = (v) => {
+  const y = ((CHART_Y_MAX - v) / (CHART_Y_MAX - CHART_Y_MIN)) * AH;
+  return Math.max(0, Math.min(AH, y));
+};
+
+function drawChartSpans(spans, color) {
+  attCtx.fillStyle = color;
+  for (const s of spans) {
+    const x0 = Math.max(0, chartX(s.start));
+    const x1 = Math.min(AW, chartX(s.end === null ? attClock : s.end));
+    if (x1 > x0) attCtx.fillRect(x0, 0, x1 - x0, AH);
+  }
+}
+
+function drawAttChart() {
+  attCtx.clearRect(0, 0, AW, AH);
+
+  // Shaded spans go first so the lines draw on top.
+  drawChartSpans(gapSpans, "rgba(150, 150, 170, 0.12)");
+  drawChartSpans(offSpans, "rgba(251, 191, 36, 0.14)");
+
+  // Gridlines: calibrated baseline (0) and lapse threshold (OFF_ENTER).
+  attCtx.font = "11px system-ui, sans-serif";
+  attCtx.textBaseline = "bottom";
+  for (const [v, label] of [[0, "calibrated baseline"], [OFF_ENTER, "lapse threshold"]]) {
+    const y = chartY(v);
+    attCtx.strokeStyle = "rgba(216, 216, 232, 0.25)";
+    attCtx.lineWidth = 1;
+    attCtx.setLineDash(v === 0 ? [] : [3, 3]);
+    attCtx.beginPath();
+    attCtx.moveTo(0, y);
+    attCtx.lineTo(AW, y);
+    attCtx.stroke();
+    attCtx.setLineDash([]);
+    attCtx.fillStyle = "rgba(216, 216, 232, 0.45)";
+    attCtx.fillText(label, 6, y - 2);
+  }
+
+  // Raw (un-z-scored) calibration observations as dots.
+  attCtx.fillStyle = "rgba(34, 211, 238, 0.6)";
+  for (const p of calPoints) {
+    attCtx.beginPath();
+    attCtx.arc(chartX(p.t), chartY(p.v), 2.5, 0, 2 * Math.PI);
+    attCtx.fill();
+  }
+  if (phase === "CAL") {
+    attCtx.fillStyle = "rgba(216, 216, 232, 0.3)";
+    attCtx.font = "20px system-ui, sans-serif";
+    attCtx.textAlign = "center";
+    attCtx.textBaseline = "middle";
+    attCtx.fillText("calibrating…", AW / 2, AH / 2);
+    attCtx.textAlign = "start";
+  }
+
+  // Kalman estimate: ±1 sd band, then the mean on top.
+  if (kalBuf.length >= 2) {
+    attCtx.fillStyle = "rgba(34, 211, 238, 0.15)";
+    attCtx.beginPath();
+    attCtx.moveTo(chartX(kalBuf[0].t), chartY(kalBuf[0].m + kalBuf[0].s));
+    for (const p of kalBuf) attCtx.lineTo(chartX(p.t), chartY(p.m + p.s));
+    for (let i = kalBuf.length - 1; i >= 0; i--) {
+      attCtx.lineTo(chartX(kalBuf[i].t), chartY(kalBuf[i].m - kalBuf[i].s));
+    }
+    attCtx.closePath();
+    attCtx.fill();
+
+    attCtx.strokeStyle = COL_EST;
+    attCtx.lineWidth = 2;
+    attCtx.beginPath();
+    attCtx.moveTo(chartX(kalBuf[0].t), chartY(kalBuf[0].m));
+    for (const p of kalBuf) attCtx.lineTo(chartX(p.t), chartY(p.m));
+    attCtx.stroke();
+  }
+
+  // EMA baseline: dashed grey (skipping the stretch before its first value).
+  const emaPts = emaBuf.filter((p) => p.v !== null);
+  if (emaPts.length >= 2) {
+    attCtx.strokeStyle = "rgba(180, 180, 195, 0.8)";
+    attCtx.lineWidth = 1.5;
+    attCtx.setLineDash([5, 4]);
+    attCtx.beginPath();
+    attCtx.moveTo(chartX(emaPts[0].t), chartY(emaPts[0].v));
+    for (const p of emaPts) attCtx.lineTo(chartX(p.t), chartY(p.v));
+    attCtx.stroke();
+    attCtx.setLineDash([]);
+  }
+}
+
+/* ================================================================
+ * ATTENTION LAYER — PANEL HEADER & PHASE UI
+ * ================================================================ */
+const attPill = document.getElementById("attPill");
+const attEstimateEl = document.getElementById("attEstimate");
+const attMismatchEl = document.getElementById("attMismatch");
+const introOverlay = document.getElementById("introOverlay");
+const calBanner = document.getElementById("calBanner");
+const calCountdown = document.getElementById("calCountdown");
+const startCalBtn = document.getElementById("startCalBtn");
+const restartBtn = document.getElementById("restartBtn");
+const csvBtn = document.getElementById("csvBtn");
+
+function renderAttHeader() {
+  if (phase === "MAIN" && attKF.initialized) {
+    attEstimateEl.textContent = attDisplayed().mean.toFixed(1);
+    attPill.textContent = offTask ? "attention lapse" : "on task";
+    attPill.className = "pill " + (offTask ? "off" : "on");
+  } else {
+    attEstimateEl.textContent = "–";
+    attPill.textContent = phase === "CAL" ? "calibrating" : "waiting";
+    attPill.className = "pill";
+  }
+  attMismatchEl.textContent = Number.isFinite(curMismatch) ? curMismatch.toFixed(0) : "–";
+  if (phase === "CAL") {
+    calCountdown.textContent = Math.max(0, Math.ceil(CAL_TOTAL - calTime));
+  }
+}
+
+startCalBtn.addEventListener("click", () => {
+  phase = "CAL";
+  calTime = 0;
+  introOverlay.classList.add("hidden");
+  calBanner.classList.remove("hidden");
+});
+
+// Back to INTRO, wiping all attention state. The tracking demo's own Reset
+// button intentionally does NOT touch any of this.
+restartBtn.addEventListener("click", () => {
+  phase = "INTRO";
+  attClock = 0;
+  calTime = 0;
+  calObs = [];
+  mu0 = 0; sig0 = 1;
+  pendingClean = null; lastClean = null; vUser = null; curMismatch = NaN;
+  winMismatch = []; winTime = 0; winBroken = false;
+  attKF.initialized = false;
+  lastObsClock = null; lastStepClock = 0; gapAccum = 0;
+  emaZ = null; tickObs = null; tickZ = null;
+  offTask = false; belowSince = null;
+  kalBuf = []; emaBuf = []; calPoints = []; offSpans = []; gapSpans = [];
+  logRows = []; logAccum = 0;
+  introOverlay.classList.remove("hidden");
+  calBanner.classList.add("hidden");
+});
+
+csvBtn.addEventListener("click", () => {
+  const header = "t,phase,mismatch,obs,z,kal_mean,kal_sd,ema,label,pointer_present";
+  const blob = new Blob([header + "\n" + logRows.join("\n") + "\n"], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "attention-log.csv";
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+/* ================================================================
+ * UI WIRING
+ * ================================================================ */
+const noiseSlider = document.getElementById("noiseSlider");
+const procSlider = document.getElementById("procSlider");
+const measSlider = document.getElementById("measSlider");
+const noiseValue = document.getElementById("noiseValue");
+const procValue = document.getElementById("procValue");
+const measValue = document.getElementById("measValue");
+const pauseBtn = document.getElementById("pauseBtn");
+const resetBtn = document.getElementById("resetBtn");
+
+// Round a log-slider value for display: 1 decimal when small, integer when big.
+function fmt(v) {
+  return v < 10 ? v.toFixed(1) : Math.round(v).toString();
+}
+
+noiseSlider.addEventListener("input", () => {
+  params.sigmaN = Number(noiseSlider.value);
+  noiseValue.textContent = params.sigmaN + " px";
+});
+procSlider.addEventListener("input", () => {
+  params.sigmaA = Math.pow(10, Number(procSlider.value));
+  procValue.innerHTML = fmt(params.sigmaA) + " px/s&sup2;";
+});
+measSlider.addEventListener("input", () => {
+  params.sigmaR = Math.pow(10, Number(measSlider.value));
+  measValue.textContent = fmt(params.sigmaR) + " px";
+});
+
+pauseBtn.addEventListener("click", () => {
+  paused = !paused;
+  pauseBtn.textContent = paused ? "Resume" : "Pause";
+  // Attention layer: drop the clean-sample chain so velocity differencing
+  // re-seeds after the pause instead of spanning it.
+  pendingClean = null;
+  lastClean = null;
+});
+
+resetBtn.addEventListener("click", () => {
+  // Reinitialize filter, trails, and metrics. Sliders keep their values,
+  // and the dot keeps moving from where it is (no teleport).
+  kfX.initialized = false;
+  kfY.initialized = false;
+  pendingObs = null;
+  pendingObsDrawn = null;
+  clearTrails();
+  resetMetrics();
+});
+
+/* ================================================================
+ * START
+ * ================================================================ */
+resizeCanvas();
+resizeAttCanvas();
+lastNow = performance.now();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
