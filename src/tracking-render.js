@@ -12,7 +12,7 @@
 // estimate). Toggled by the button wired in ui.js. This is purely a
 // rendering flag — the filter itself keeps running either way, so the RMSE
 // figures are live the moment the layer is switched back on.
-let showPosition = true;
+let showPosition = false;
 
 // Trail as a polyline of individually stroked segments so alpha can fade
 // from `maxAlpha` at the newest point down to 0 at the oldest.
