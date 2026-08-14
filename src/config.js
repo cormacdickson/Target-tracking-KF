@@ -35,11 +35,57 @@ const P_CAP = 1e6;           // cap on P's diagonal while coasting so it can't b
 // signal; too high and it tracks the quantisation jitter instead. A hand
 // can cross a 900 px canvas in about half a second, so it accelerates hard.
 const CURSOR_SIGMA_A = 2000;   // px/s² — process noise (hand acceleration)
-const CURSOR_SIGMA_R = 3;      // px — measurement noise (pointer quantisation)
+
+// Measurement noise is ESTIMATED at runtime rather than fixed (see cursor.js),
+// because the samples now carry the injected noise as well as the pointer's
+// own quantisation, and sigma_n is on a slider. A filter told 3 px while
+// receiving 25 px is mistuned by 8x and chases the noise: measured velocity
+// error 176.6 px/s against 36.6 px/s for a correctly tuned filter.
+const CURSOR_SIGMA_R_MIN = 3;  // px — pointer quantisation: the floor, and the
+                               // value the estimate starts from on a cold start
+const ADAPT_WIN = 120;         // innovations kept, pooled across both axes —
+                               // the injected noise is isotropic, so x and y
+                               // are draws from one process and pooling halves
+                               // the time to a stable estimate
+const ADAPT_SLEW = 0.02;       // per-update EMA on sigma_r. R and P feed each
+                               // other, so a one-step update makes the loop ring.
+                               // Measured: converges in ~2.2 s after a slider
+                               // step, settling with ~4.8 px of ripple
+// Ceiling on the estimate. Innovation-based adaptation cannot tell "my
+// measurements got noisier" from "my process model is wrong", and a hand
+// accelerating past CURSOR_SIGMA_A produces large innovations either way —
+// measured, a sweep at 4.8x the assumed acceleration drives the estimate to
+// ~360 px. This never binds in normal use (the real target peaks at 136 px/s²,
+// 15x under the model, and the sigma_n slider tops out at 60 px), but it stops
+// a violent flick leaving the filter ignoring its data for the next few seconds.
+const ADAPT_SIGMA_R_MAX = 150; // px
+
 // Observations computed from a velocity estimate less certain than this are
-// discarded; sqrt(p11) is large for a moment after the pointer returns to
-// the canvas. Set from measurement — see README.
-const CURSOR_V_SD_MAX = 120;   // px/s
+// discarded; sqrt(p11) is large for a moment after the pointer returns to the
+// canvas. The bound has to scale with the noise or it stops meaning anything:
+// settled sqrt(p11) measured 56 → 79 → 100 → 126 px/s as sigma_n went
+// 0 → 10 → 25 → 60, so a fixed 120 rejects EVERY observation at the top of the
+// slider and the attention readout goes blank. Fitting those points gives the
+// usual alpha-beta result, sqrt(p11) ∝ sigma_r^0.27, which keeps the gate at a
+// constant ~2.1x of the filter's own settled uncertainty at every noise level.
+const CURSOR_V_SD_MAX = 120;   // px/s, at CURSOR_SIGMA_R_MIN
+const CURSOR_V_SD_EXP = 0.27;  // measured exponent for the scaling above
+
+/* ---------------- Savitzky-Golay velocity ---------------- */
+// The second velocity estimator, run in parallel with the cursor Kalman
+// filter on exactly the same samples so the attention chart can compare them.
+//
+// Note the unit: the window is counted in SAMPLES, not seconds, so on a
+// 120 Hz display it spans half the wall-clock time it does at 60 Hz — less
+// smoothing, less lag, and a measurably different estimator. That is
+// inherent to a fixed-length filter and is the flip side of the Kalman
+// filter's parameters being physical (px/s², px), which do not shift
+// meaning when the refresh rate does. Nothing downstream assumes a rate:
+// the lag is measured from real timestamps every frame.
+const SG_WINDOW = 9;        // samples in the fit window; odd, so the centre IS a sample
+const SG_DEGREE = 2;        // polynomial degree (see savgol.js on why this is nearly a no-op)
+const SG_MIN = 5;           // fewest samples before a slope is reported
+const SG_T_SPAN_MIN = 0.02; // s — below this the fit is singular in all but name
 
 /* ---------------- attention readout ---------------- */
 const ATT_WINDOW = 0.5;   // s of pointer-over time per observation (~2 Hz)
@@ -74,6 +120,12 @@ const VEL_ARROW_MIN = 4;       // px — shorter than this, draw no arrowhead
 const COL_TRUE = "#ffffff";
 const COL_OBS = "#ff9f43";
 const COL_EST = "#22d3ee";
-const COL_VEL_USER = "#a78bfa";  // violet — distinct from white/orange/cyan
+const COL_VEL_USER = "#a78bfa";  // violet — the KALMAN velocity estimate
+const COL_SG = "#f472b6";        // pink — the SAVITZKY-GOLAY velocity estimate
 const COL_MISMATCH = "#fbbf24";  // amber — the same colour "attention lapse"
                                  // uses, so a widening gap reads as one
+
+// Each velocity estimator has one colour used EVERYWHERE it appears: as an
+// arrow on the tracking canvas and as a line on the attention chart. That is
+// why the attention score line is violet/pink rather than cyan — cyan stays
+// reserved for the position estimate on the main canvas.

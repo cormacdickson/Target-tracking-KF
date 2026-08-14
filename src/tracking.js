@@ -6,9 +6,14 @@
  * Provides: kfX, kfY, dotT, paused, pointerOver, pendingObs, lastNow,
  *           the three trails, clearTrails, pushTrail
  *
- * The pointer handler is where the demo's central split happens: the
- * CLEAN cursor position goes to the attention layer, the NOISY one goes
- * to the Kalman filters. Neither ever sees the other's copy.
+ * The pointer handler produces ONE noisy reading per event and hands the
+ * same coordinates to everything downstream: the position filters, both
+ * velocity estimators, and through them the attention layer. One sensor,
+ * one reading — not two independently corrupted copies of the truth.
+ *
+ * The clean coordinates are kept alongside, but only so a stationary
+ * cursor can be re-observed with FRESH noise (see velocity.js); nothing
+ * estimates anything from them directly.
  */
 
 const kfX = new KF1D();
@@ -38,9 +43,10 @@ function pushTrail(trail, x, y) {
 }
 
 /* ---------------- input ----------------
- * Gaussian noise (std sigma_n) is added ONCE, at sample time. The noisy
- * value is both what the filter sees and what is drawn as the observation
- * marker — the filter never sees the clean cursor. Only the most recent
+ * Gaussian noise (std sigma_n) is added ONCE, at sample time, and the same
+ * corrupted coordinates go to every consumer. The noisy value is what the
+ * filters see and what is drawn as the observation marker; nothing
+ * downstream has access to the true cursor position. Only the most recent
  * sample per frame is kept; intermediates are discarded.
  */
 canvas.addEventListener("pointermove", (e) => {
@@ -48,27 +54,33 @@ canvas.addEventListener("pointermove", (e) => {
   const rect = canvas.getBoundingClientRect();
   const cx = e.clientX - rect.left;
   const cy = e.clientY - rect.top;
-  // Clean sample for the attention layer, stored BEFORE noise is added —
-  // the attention layer reads the human, so it must never see the
-  // injected noise. The tracking filter sees only the noisy sample below.
-  pendingClean = { x: cx, y: cy, t: performance.now() / 1000 };
-  pendingObs = {
-    x: cx + gaussian() * params.sigmaN,
-    y: cy + gaussian() * params.sigmaN,
-  };
+  // One draw, shared. Giving the position filter and the velocity
+  // estimators independent draws would model two sensors watching one hand,
+  // which is not what this demo is about.
+  const nx = cx + gaussian() * params.sigmaN;
+  const ny = cy + gaussian() * params.sigmaN;
+  pendingObs = { x: nx, y: ny };
+  // The velocity estimators need a timestamp; they also need the clean
+  // coordinates carried along, because a parked cursor is re-observed with
+  // fresh noise rather than by repeating this exact reading (velocity.js).
+  pendingSample = { x: nx, y: ny, t: performance.now() / 1000, cx, cy };
 });
 
 canvas.addEventListener("pointerleave", () => {
   pointerOver = false;
   pendingObs = null;
   // Attention layer: a window the pointer left is not a valid observation.
-  pendingClean = null;
-  lastClean = null;
+  pendingSample = null;
+  lastSample = null;
   winBroken = true;
-  // Drop the cursor velocity filter so it re-initialises from the next
-  // sample. Left running it would integrate its last velocity through the
+  // Drop both velocity estimators so they rebuild from the next sample.
+  // Left running, the filter would integrate its last velocity through the
   // whole absence — metres of phantom travel — and the correction on
-  // re-entry would produce a wild velocity spike.
+  // re-entry would produce a wild velocity spike. A Savitzky-Golay window
+  // straddling the gap is invalid for the same reason: it would fit a line
+  // through two positions minutes apart and call the slope a velocity.
   cursorKFX.initialized = false;
   cursorKFY.initialized = false;
+  resetAdaptiveR();
+  sgReset();
 });

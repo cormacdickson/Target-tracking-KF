@@ -77,9 +77,10 @@ function frame(now) {
       }
     }
 
-    // --- cursor velocity filter, then the attention pipeline that reads
-    //     it. Both run on the CLEAN cursor path and never see the noise. ---
-    updateCursorFilter(dt);
+    // --- both velocity estimators, then the attention pipeline that reads
+    //     them. All of this runs on the CLEAN cursor path and never sees
+    //     the injected noise. ---
+    updateVelocityEstimators(dt);
     attentionFrame(dt);
 
     draw(trueX, trueY);

@@ -146,6 +146,20 @@ button:hover { background: #3d3d5c; }
   font-variant-numeric: tabular-nums;
 }
 .att-spacer { flex: 1; }
+/* Colour-code the two estimators' numbers to match their chart lines and
+   their arrows on the tracking canvas. Keep these in step with COL_SG and
+   COL_VEL_USER in src/config.js. */
+.att-stat strong.c-sg { color: #f472b6; }
+.att-stat strong.c-kf { color: #a78bfa; }
+/* Shown when sigma_n has moved since calibration, so the score is no longer
+   measured against a baseline that matches the current conditions. */
+.drift {
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 0.85em;
+  background: rgba(251, 191, 36, 0.18);
+  color: #fbbf24;
+}
 .pill {
   padding: 2px 12px;
   border-radius: 999px;

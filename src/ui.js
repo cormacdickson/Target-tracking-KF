@@ -14,7 +14,12 @@
 /* ---------------- attention panel + phase elements ---------------- */
 const attPill = document.getElementById("attPill");
 const attScoreEl = document.getElementById("attScore");
+const attScoreKfEl = document.getElementById("attScoreKf");
 const attMismatchEl = document.getElementById("attMismatch");
+const attMismatchKfEl = document.getElementById("attMismatchKf");
+const attSigmaREl = document.getElementById("attSigmaR");
+const calDriftEl = document.getElementById("calDrift");
+const calDriftValEl = document.getElementById("calDriftVal");
 const introOverlay = document.getElementById("introOverlay");
 const calBanner = document.getElementById("calBanner");
 const calCountdown = document.getElementById("calCountdown");
@@ -22,18 +27,38 @@ const startCalBtn = document.getElementById("startCalBtn");
 const restartBtn = document.getElementById("restartBtn");
 const csvBtn = document.getElementById("csvBtn");
 
+// The pill follows the authoritative source; the numbers show both, so the
+// two estimators can be compared without reading the chart.
 function renderAttHeader() {
-  const score = phase === "MAIN" ? attScore() : null;
-  if (score !== null) {
-    attScoreEl.textContent = score.toFixed(1);
+  const primaryScore = phase === "MAIN" ? attScore(attPrimary) : null;
+  if (primaryScore !== null) {
     attPill.textContent = offTask ? "attention lapse" : "on task";
     attPill.className = "pill " + (offTask ? "off" : "on");
   } else {
-    attScoreEl.textContent = "–";
     attPill.textContent = phase === "CAL" ? "calibrating" : "waiting";
     attPill.className = "pill";
   }
-  attMismatchEl.textContent = Number.isFinite(curMismatch) ? curMismatch.toFixed(0) : "–";
+
+  const fmtScore = (src) => {
+    const s = phase === "MAIN" ? attScore(src) : null;
+    return s === null ? "–" : s.toFixed(1);
+  };
+  const fmtMis = (src) =>
+    Number.isFinite(src.curMismatch) ? src.curMismatch.toFixed(0) : "–";
+
+  attScoreEl.textContent = fmtScore(attSG);
+  attScoreKfEl.textContent = fmtScore(attKF);
+  attMismatchEl.textContent = fmtMis(attSG);
+  attMismatchKfEl.textContent = fmtMis(attKF);
+  attSigmaREl.textContent = sigmaRHat.toFixed(1);
+
+  // Say so rather than let the score quietly drop: a noise change alters
+  // how accurately ANY estimator can read the hand, so it shifts the score
+  // without attention having changed at all.
+  const stale = calibrationStale();
+  calDriftEl.classList.toggle("hidden", !stale);
+  if (stale) calDriftValEl.textContent = calSigmaN.toFixed(0);
+
   if (phase === "CAL") {
     calCountdown.textContent = Math.max(0, Math.ceil(CAL_TOTAL - calTime));
   }
@@ -52,23 +77,32 @@ restartBtn.addEventListener("click", () => {
   phase = "INTRO";
   attClock = 0;
   calTime = 0;
-  calObs = [];
-  mu0 = 0; sig0 = 1;
-  pendingClean = null; lastClean = null; curMismatch = NaN;
+  pendingSample = null; lastSample = null; calSigmaN = null;
+  // Both velocity estimators, so neither carries state across the restart.
   cursorKFX.initialized = false; cursorKFY.initialized = false;
-  winMismatch = []; winTime = 0; winBroken = false;
-  recentZ = [];
-  lastObsClock = null; tickObs = null; tickZ = null;
+  resetAdaptiveR();
+  sgReset();
+  for (const src of attSources) {
+    src.winMismatch = []; src.curMismatch = NaN;
+    src.calObs = []; src.mu0 = 0; src.sig0 = 1;
+    src.recentZ = []; src.tickObs = null; src.tickZ = null;
+    src.scoreBuf = []; src.calPoints = [];
+  }
+  winTime = 0; winBroken = false;
+  lastObsClock = null;
   offTask = false; belowSince = null;
-  scoreBuf = []; calPoints = []; offSpans = []; gapSpans = [];
+  offSpans = []; gapSpans = [];
   logRows = []; logAccum = 0;
   introOverlay.classList.remove("hidden");
   calBanner.classList.add("hidden");
+  // Synced here rather than left to the next renderAttHeader, matching the
+  // two lines above: a restart should leave no stale badge on screen even
+  // for the one frame before the loop comes round again.
+  calDriftEl.classList.add("hidden");
 });
 
 csvBtn.addEventListener("click", () => {
-  const header = "t,phase,mismatch,obs,z,score,label,pointer_present";
-  const blob = new Blob([header + "\n" + logRows.join("\n") + "\n"], { type: "text/csv" });
+  const blob = new Blob([LOG_HEADER + "\n" + logRows.join("\n") + "\n"], { type: "text/csv" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -87,6 +121,7 @@ const measValue = document.getElementById("measValue");
 const pauseBtn = document.getElementById("pauseBtn");
 const resetBtn = document.getElementById("resetBtn");
 const positionBtn = document.getElementById("positionBtn");
+const velSourceBtn = document.getElementById("velSourceBtn");
 const metricsPanel = document.getElementById("metricsPanel");
 
 // Round a log-slider value for display: 1 decimal when small, integer when big.
@@ -110,10 +145,23 @@ measSlider.addEventListener("input", () => {
 pauseBtn.addEventListener("click", () => {
   paused = !paused;
   pauseBtn.textContent = paused ? "Resume" : "Pause";
-  // Attention layer: drop the clean-sample chain so velocity differencing
-  // re-seeds after the pause instead of spanning it.
-  pendingClean = null;
-  lastClean = null;
+  // Attention layer: drop the sample chain so both velocity estimators
+  // re-seed after the pause instead of spanning it. The Savitzky-Golay
+  // window especially — a fit across a paused stretch would read the wall
+  // clock advancing while the hand did not, and report a phantom slowdown.
+  // The adaptive noise estimate goes too: its window would otherwise splice
+  // together innovations from either side of the gap.
+  pendingSample = null;
+  lastSample = null;
+  resetAdaptiveR();
+  sgReset();
+});
+
+// Switch which velocity estimator the arrows draw. Both keep running either
+// way; this only changes which one is shown, and the chart shows both.
+velSourceBtn.addEventListener("click", () => {
+  velSource = velSource === "savgol" ? "kalman" : "savgol";
+  velSourceBtn.textContent = "Arrows: " + activeVelSource().label;
 });
 
 // Show/hide the position-denoising layer: the orange observations, the cyan

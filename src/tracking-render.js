@@ -4,8 +4,9 @@
  * ================================================================
  * Needs:    config.js (colours), canvas.js (ctx, W, H), tracking.js
  *           (trails, kfX/kfY, pointerOver, dotT), target.js (dotVelocity),
- *           cursor.js (cursorVelocity), main.js (pendingObsDrawn, at runtime)
- * Provides: draw(), showPosition, plus the small drawing primitives it uses
+ *           attention.js (attSG, attKF — at runtime),
+ *           main.js (pendingObsDrawn, at runtime)
+ * Provides: draw(), showPosition, velSource, plus the drawing primitives
  */
 
 // Whether to draw the position-denoising layer (orange observations, cyan
@@ -13,6 +14,18 @@
 // rendering flag — the filter itself keeps running either way, so the RMSE
 // figures are live the moment the layer is switched back on.
 let showPosition = false;
+
+// Which velocity estimator the arrows show. Defaults to the source that
+// drives the on-task verdict, so what you see is what is being judged.
+let velSource = "savgol";
+
+// Resolved at call time, not load time: attention.js loads after this file.
+// Going through the attention source object rather than calling sgVelocity()
+// or cursorVelocity() directly is deliberate — the arrow then cannot drift
+// out of agreement with the chart line, because both read the same object.
+function activeVelSource() {
+  return velSource === "savgol" ? attSG : attKF;
+}
 
 // Trail as a polyline of individually stroked segments so alpha can fade
 // from `maxAlpha` at the newest point down to 0 at the oldest.
@@ -95,16 +108,22 @@ function drawArrow(x0, y0, dx, dy, color, width) {
 // is the picture of what the attention score actually measures: the amber
 // segment joining the tips IS the mismatch.
 function drawVelocityArrows() {
-  const v = cursorVelocity();
+  const src = activeVelSource();
+  const v = src.velFn();
   if (v === null || !pointerOver) return;
   if (!Number.isFinite(v.x) || !Number.isFinite(v.y)) return;
 
-  const ox = cursorKFX.pos, oy = cursorKFY.pos;   // same filter as the vector
+  // Both modes share this origin, so switching sources changes only the
+  // vector under comparison and not where it is anchored.
+  const ox = cursorKFX.pos, oy = cursorKFY.pos;
   if (!Number.isFinite(ox) || !Number.isFinite(oy)) return;
 
-  // The target's velocity as the attention layer sees it: lag-compensated,
-  // so the drawing matches the number rather than approximating it.
-  const tv = dotVelocity(dotT - ATT_LAG);
+  // The target's velocity as the attention layer sees it FOR THIS SOURCE:
+  // ATT_LAG plus however far in the past this estimator's answer refers to.
+  // Using a shared ATT_LAG reference would quietly break the invariant that
+  // the connector below is the mismatch — a lagged Savitzky-Golay estimate
+  // would be drawn against a target instant it was never compared to.
+  const tv = dotVelocity(dotT - ATT_LAG - src.lagFn());
   const tdx = tv.dnx * W * VEL_ARROW_SCALE, tdy = tv.dny * H * VEL_ARROW_SCALE;
   const udx = v.x * VEL_ARROW_SCALE, udy = v.y * VEL_ARROW_SCALE;
 
@@ -122,18 +141,19 @@ function drawVelocityArrows() {
   ctx.globalAlpha = 0.75;
   drawArrow(ox, oy, tdx, tdy, COL_TRUE, 2);
   ctx.globalAlpha = 1;
-  drawArrow(ox, oy, udx, udy, COL_VEL_USER, 2.5);
+  drawArrow(ox, oy, udx, udy, src.color, 2.5);
 }
 
 function drawLegend() {
   // Only list what is actually on screen.
+  const src = activeVelSource();
   const entries = [
     { color: COL_TRUE, label: "true target" },
     ...(showPosition ? [
       { color: COL_OBS, label: "noisy observation" },
       { color: COL_EST, label: "Kalman estimate" },
     ] : []),
-    { color: COL_VEL_USER, label: "your velocity" },
+    { color: src.color, label: "your velocity (" + src.label + ")" },
     { color: COL_MISMATCH, label: "velocity mismatch" },
   ];
   ctx.font = "13px system-ui, sans-serif";

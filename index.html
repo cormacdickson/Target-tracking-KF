@@ -48,11 +48,14 @@
     <div class="buttons">
       <button id="pauseBtn">Pause</button>
       <button id="resetBtn">Reset</button>
-      <button id="positionBtn">Hide position filter</button>
+      <!-- Label and panel visibility must match showPosition's initial
+           value in src/tracking-render.js, which starts false. -->
+      <button id="positionBtn">Show position filter</button>
+      <button id="velSourceBtn">Arrows: Sav-Gol</button>
     </div>
   </div>
 
-  <div class="metrics" id="metricsPanel">
+  <div class="metrics hidden" id="metricsPanel">
     <div>
       <div class="label">Observation RMSE (300 frames)</div>
       <div class="value"><span id="obsRmse">&ndash;</span> px</div>
@@ -70,8 +73,19 @@
   <div class="attention">
     <div class="att-header">
       <span id="attPill" class="pill">waiting</span>
-      <span class="att-stat">score <strong id="attScore">&ndash;</strong></span>
-      <span class="att-stat">mismatch <strong id="attMismatch">&ndash;</strong> px/s</span>
+      <span class="att-stat">score
+        <strong id="attScore" class="c-sg">&ndash;</strong> /
+        <strong id="attScoreKf" class="c-kf">&ndash;</strong></span>
+      <span class="att-stat">mismatch
+        <strong id="attMismatch" class="c-sg">&ndash;</strong> /
+        <strong id="attMismatchKf" class="c-kf">&ndash;</strong> px/s</span>
+      <!-- The filter's own estimate of its measurement noise. Watch it climb
+           toward sigma_n after the slider moves; the Sav-Gol has no
+           equivalent number because it cannot work this out. -->
+      <span class="att-stat">&sigma;&#770;<sub>r</sub>
+        <strong id="attSigmaR">&ndash;</strong> px</span>
+      <span id="calDrift" class="drift hidden">baseline measured at
+        &sigma;<sub>n</sub>&nbsp;=&nbsp;<span id="calDriftVal">&ndash;</span>&nbsp;px</span>
       <span class="att-spacer"></span>
       <button id="restartBtn">Restart phases</button>
       <button id="csvBtn">Download CSV</button>
@@ -90,8 +104,10 @@
 <script src="src/util.js"></script>
 <script src="src/target.js"></script>
 <script src="src/kalman.js"></script>
+<script src="src/savgol.js"></script>
 <script src="src/canvas.js"></script>
 <script src="src/cursor.js"></script>
+<script src="src/velocity.js"></script>
 <script src="src/tracking.js"></script>
 <script src="src/metrics.js"></script>
 <script src="src/tracking-render.js"></script>

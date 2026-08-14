@@ -2,9 +2,14 @@
 /* ================================================================
  * ATTENTION CHART — the 60 s scrolling strip chart
  * ================================================================
- * Needs:    config.js (chart constants, COL_EST), attention.js (attClock,
- *           scoreBuf, calPoints, offSpans, gapSpans, phase)
+ * Needs:    config.js (chart constants), attention.js (attClock, attSources,
+ *           attPrimary, offSpans, gapSpans, phase, attScore)
  * Provides: attCanvas, attCtx, AW, AH, resizeAttCanvas, drawAttChart
+ *
+ * One line per velocity estimator, each in that estimator's colour — the
+ * same colour its arrow uses on the tracking canvas. Both lines are the
+ * same readout computed the same way; the only difference upstream is where
+ * the velocity came from, so the gap between them IS the estimator's effect.
  */
 const attCanvas = document.getElementById("attCanvas");
 const attCtx = attCanvas.getContext("2d");
@@ -64,13 +69,17 @@ function drawAttChart() {
     attCtx.fillText(label, 6, y - 2);
   }
 
-  // Raw (un-z-scored) calibration observations as dots.
-  attCtx.fillStyle = "rgba(34, 211, 238, 0.6)";
-  for (const p of calPoints) {
-    attCtx.beginPath();
-    attCtx.arc(chartX(p.t), chartY(p.v), 2.5, 0, 2 * Math.PI);
-    attCtx.fill();
+  // Raw (un-z-scored) calibration observations as dots, per source.
+  attCtx.globalAlpha = 0.6;
+  for (const src of attSources) {
+    attCtx.fillStyle = src.color;
+    for (const p of src.calPoints) {
+      attCtx.beginPath();
+      attCtx.arc(chartX(p.t), chartY(p.v), 2.5, 0, 2 * Math.PI);
+      attCtx.fill();
+    }
   }
+  attCtx.globalAlpha = 1;
   if (phase === "CAL") {
     attCtx.fillStyle = "rgba(216, 216, 232, 0.3)";
     attCtx.font = "20px system-ui, sans-serif";
@@ -80,14 +89,42 @@ function drawAttChart() {
     attCtx.textAlign = "start";
   }
 
-  // The score: a single solid line. No band — a deterministic readout
-  // carries no uncertainty estimate, and drawing one would be a fiction.
-  if (scoreBuf.length >= 2) {
-    attCtx.strokeStyle = COL_EST;
-    attCtx.lineWidth = 2;
+  // The scores: one solid line per source. No bands — a deterministic
+  // readout carries no uncertainty estimate, and drawing one would be a
+  // fiction. Drawn in reverse so the authoritative source lands on top.
+  for (let i = attSources.length - 1; i >= 0; i--) {
+    const src = attSources[i];
+    if (src.scoreBuf.length < 2) continue;
+    attCtx.strokeStyle = src.color;
+    attCtx.lineWidth = src === attPrimary ? 2 : 1.5;
+    attCtx.globalAlpha = src === attPrimary ? 1 : 0.75;
     attCtx.beginPath();
-    attCtx.moveTo(chartX(scoreBuf[0].t), chartY(scoreBuf[0].v));
-    for (const p of scoreBuf) attCtx.lineTo(chartX(p.t), chartY(p.v));
+    attCtx.moveTo(chartX(src.scoreBuf[0].t), chartY(src.scoreBuf[0].v));
+    for (const p of src.scoreBuf) attCtx.lineTo(chartX(p.t), chartY(p.v));
     attCtx.stroke();
   }
+  attCtx.globalAlpha = 1;
+
+  drawChartLegend();
+}
+
+// Two swatches in the top-right corner naming the lines. Right-aligned so it
+// cannot collide with the gridline labels drawn from the left edge.
+function drawChartLegend() {
+  attCtx.font = "11px system-ui, sans-serif";
+  attCtx.textBaseline = "middle";
+  attCtx.textAlign = "right";
+  let y = 12;
+  for (const src of attSources) {
+    attCtx.strokeStyle = src.color;
+    attCtx.lineWidth = 2;
+    attCtx.beginPath();
+    attCtx.moveTo(AW - 8, y);
+    attCtx.lineTo(AW - 22, y);
+    attCtx.stroke();
+    attCtx.fillStyle = "rgba(216, 216, 232, 0.7)";
+    attCtx.fillText(src.label, AW - 28, y);
+    y += 16;
+  }
+  attCtx.textAlign = "start";
 }
